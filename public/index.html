@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Anonymous Chat — Create Room</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; }
+    button { padding: 8px 12px; }
+    code { background:#f4f4f4; padding:2px 6px; display:inline-block; }
+  </style>
+</head>
+<body>
+  <h2>Anonymous Group Chat (max 5)</h2>
+  <p><button id="createBtn">Create room</button></p>
+  <div id="result"></div>
+
+  <hr/>
+  <h3>Or open an invite link</h3>
+  <input id="invite" placeholder="/chat.html?room=ROOMID" style="width:300px" />
+  <button id="openInvite">Open</button>
+
+  <script>
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/create-room');
+        const data = await res.json();
+        const inviteLink = location.origin + data.inviteLink;
+        document.getElementById('result').innerHTML = `
+          <p>Invite link: <a href="${inviteLink}" target="_blank">${inviteLink}</a></p>
+          <p><strong>Host token (save this to close the room):</strong><br><code id="token">${data.hostToken}</code></p>
+          <p>Open the invite link in another tab/device to join.</p>
+        `;
+      } catch (e) {
+        alert('Failed to create room');
+        console.error(e);
+      }
+    });
+
+    document.getElementById('openInvite').addEventListener('click', () => {
+      const v = document.getElementById('invite').value.trim();
+      if (!v) return;
+      let url = v;
+      if (!v.startsWith('http')) {
+        if (!v.startsWith('/')) url = '/' + v;
+        url = location.origin + url;
+      }
+      window.open(url, '_blank');
+    });
+  </script>
+</body>
+</html>
