@@ -1,0 +1,354 @@
+cat > create_project.sh <<'SH'
+#!/usr/bin/env bash
+set -e
+
+# create files and folders
+mkdir -p public
+
+# .gitignore
+cat > .gitignore <<'GIT'
+node_modules/
+.env
+*.log
+.DS_Store
+GIT
+
+# package.json
+cat > package.json <<'JSON'
+{
+  "name": "anonymous-chat",
+  "version": "1.0.0",
+  "description": "Ephemeral anonymous group chat (max 5) using Node, Express and Socket.IO",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "DEBUG=anonymous-chat node server.js"
+  },
+  "keywords": ["chat","ephemeral","socket.io","anonymous"],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "nanoid": "^4.0.0"
+  }
+}
+JSON
+
+# server.js
+cat > server.js <<'JS'
+// server.js
+const express = require('express');
+const http = require('http');
+const { nanoid } = require('nanoid');
+const app = express();
+const server = http.createServer(app);
+const io = require('socket.io')(server);
+
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static('public'));
+
+const rooms = {};
+
+app.get('/create-room', (req, res) => {
+  const roomId = nanoid(8);
+  const hostToken = nanoid(16);
+  rooms[roomId] = {
+    hostToken,
+    hostSocketId: null,
+    users: new Map(),
+    createdAt: Date.now()
+  };
+  res.json({ roomId, inviteLink: `/chat.html?room=${roomId}`, hostToken });
+});
+
+app.get('/room-info/:roomId', (req, res) => {
+  const r = rooms[req.params.roomId];
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  return res.json({ userCount: r.users.size, createdAt: r.createdAt });
+});
+
+io.on('connection', socket => {
+  socket.on('join-room', (payload, ack) => {
+    try {
+      const { roomId, username, hostToken } = payload || {};
+      if (!roomId || !username) {
+        return ack?.({ ok: false, error: 'Missing roomId or username' });
+      }
+      const room = rooms[roomId];
+      if (!room) return ack?.({ ok: false, error: 'Room not found or closed' });
+      if (room.users.size >= 5) {
+        return ack?.({ ok: false, error: 'Room full (max 5)' });
+      }
+
+      if (hostToken && hostToken === room.hostToken) {
+        room.hostSocketId = socket.id;
+        socket.data.isHost = true;
+        socket.data.hostToken = hostToken;
+      }
+
+      room.users.set(socket.id, { username: username.slice(0, 32) });
+      socket.data.roomId = roomId;
+      socket.data.username = username.slice(0, 32);
+
+      socket.join(roomId);
+
+      io.to(roomId).emit('system', { type: 'join', username });
+      io.to(roomId).emit('participants', Array.from(room.users.values()).map(u => u.username));
+
+      ack?.({ ok: true, roomId, userCount: room.users.size, host: !!socket.data.isHost });
+    } catch (err) {
+      console.error(err);
+      ack?.({ ok: false, error: 'Server error' });
+    }
+  });
+
+  socket.on('message', (msg, ack) => {
+    const { roomId, username } = socket.data;
+    if (!roomId || !rooms[roomId]) return ack?.({ ok: false, error: 'Not in room' });
+    const text = String(msg || '').slice(0, 1000);
+    const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    io.to(roomId).emit('message', { from: username, text: safeText, ts: Date.now() });
+    ack?.({ ok: true });
+  });
+
+  socket.on('close-room', (payload, ack) => {
+    const { roomId, hostToken } = payload || {};
+    const room = rooms[roomId];
+    if (!room) return ack?.({ ok: false, error: 'Room not found' });
+    if (hostToken !== room.hostToken) return ack?.({ ok: false, error: 'Invalid host token' });
+
+    io.to(roomId).emit('system', { type: 'room-closed' });
+    const sockets = Array.from(room.users.keys());
+    sockets.forEach(sid => {
+      const s = io.sockets.sockets.get(sid);
+      if (s) {
+        try {
+          s.leave(roomId);
+          s.disconnect(true);
+        } catch (e) {}
+      }
+    });
+
+    delete rooms[roomId];
+    return ack?.({ ok: true });
+  });
+
+  socket.on('disconnect', reason => {
+    const { roomId, username } = socket.data;
+    if (!roomId) return;
+    const room = rooms[roomId];
+    if (!room) return;
+    room.users.delete(socket.id);
+
+    if (room.hostSocketId === socket.id) {
+      room.hostSocketId = null;
+    }
+
+    io.to(roomId).emit('system', { type: 'leave', username });
+    io.to(roomId).emit('participants', Array.from(room.users.values()).map(u => u.username));
+
+    if (room.users.size === 0) {
+      delete rooms[roomId];
+    }
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
+JS
+
+# public/index.html
+cat > public/index.html <<'HTML'
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Anonymous Chat — Create Room</title>
+</head>
+<body>
+  <h2>Create a new anonymous group (max 5)</h2>
+  <button id="createBtn">Create room</button>
+  <div id="result"></div>
+
+  <hr>
+  <h3>Or join with invite link</h3>
+  <input id="invite" placeholder="/chat.html?room=ROOMID" style="width:300px"/>
+  <button id="openInvite">Open</button>
+
+  <script>
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      const res = await fetch('/create-room');
+      const data = await res.json();
+      const hostToken = data.hostToken;
+      const inviteLink = location.origin + data.inviteLink;
+      document.getElementById('result').innerHTML = `
+        <p>Invite link: <a href="${inviteLink}" target="_blank">${inviteLink}</a></p>
+        <p><strong>Host token (save this if you want to close your room):</strong><br>
+           <code id="token">${hostToken}</code></p>
+        <p>When you open the chat as host, paste the host token in the chat UI.</p>
+      `;
+    });
+
+    document.getElementById('openInvite').addEventListener('click', () => {
+      const v = document.getElementById('invite').value;
+      if (!v) return;
+      let url = v;
+      if (!v.startsWith('http')) {
+        if (!v.startsWith('/')) url = '/' + v;
+        url = location.origin + url;
+      }
+      window.open(url, '_blank');
+    });
+  </script>
+</body>
+</html>
+HTML
+
+# public/chat.html
+cat > public/chat.html <<'HTML'
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Anonymous Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; }
+    #messages { border: 1px solid #ddd; height: 300px; overflow:auto; padding: 8px; }
+    #participants { margin-top:8px; font-size:0.9em; color:#333; }
+  </style>
+</head>
+<body>
+  <h2>Anonymous Group Chat</h2>
+  <div>
+    <label>Username (short): <input id="username" maxlength="32"></label>
+    <label>Host token (if you are host): <input id="hostToken" maxlength="64"></label>
+    <button id="joinBtn">Join</button>
+  </div>
+
+  <div id="chatUI" style="display:none;">
+    <div id="roomInfo"></div>
+    <div id="messages"></div>
+    <div style="margin-top:8px;">
+      <input id="msg" style="width:70%" maxlength="1000"/>
+      <button id="sendBtn">Send</button>
+      <button id="closeRoomBtn" style="display:none;">Close Room (host)</button>
+    </div>
+    <div id="participants"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const roomId = params.get('room');
+    const socket = io();
+
+    const usernameInput = document.getElementById('username');
+    usernameInput.placeholder = 'Guest' + Math.floor(Math.random()*999);
+
+    document.getElementById('joinBtn').addEventListener('click', () => {
+      const username = document.getElementById('username').value.trim() || document.getElementById('username').placeholder;
+      const hostToken = document.getElementById('hostToken').value.trim() || null;
+      if (!roomId) {
+        alert('No room specified in URL. Use an invite link containing ?room=ROOMID');
+        return;
+      }
+      socket.emit('join-room', { roomId, username, hostToken }, (resp) => {
+        if (!resp || !resp.ok) {
+          alert('Failed to join: ' + (resp?.error || 'unknown'));
+          return;
+        }
+        document.getElementById('chatUI').style.display = 'block';
+        document.getElementById('roomInfo').textContent = `Room: ${roomId} — Users: ${resp.userCount}`;
+        if (resp.host) document.getElementById('closeRoomBtn').style.display = 'inline';
+      });
+    });
+
+    socket.on('system', evt => {
+      if (!evt) return;
+      if (evt.type === 'join') appendSystem(`${evt.username} joined`);
+      if (evt.type === 'leave') appendSystem(`${evt.username} left`);
+      if (evt.type === 'room-closed') {
+        appendSystem('Host closed the room. Session ended.');
+        document.getElementById('msg').disabled = true;
+        document.getElementById('sendBtn').disabled = true;
+        document.getElementById('closeRoomBtn').disabled = true;
+      }
+    });
+
+    socket.on('participants', list => {
+      document.getElementById('participants').textContent = 'Participants: ' + list.join(', ');
+    });
+
+    socket.on('message', m => appendMessage(m.from, m.text));
+
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('msg').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+
+    function sendMessage() {
+      const t = document.getElementById('msg').value.trim();
+      if (!t) return;
+      socket.emit('message', t, (ack) => {
+        if (!ack || !ack.ok) alert('Send failed: ' + (ack?.error || 'unknown'));
+        else document.getElementById('msg').value = '';
+      });
+    }
+
+    function appendSystem(text) {
+      const d = document.createElement('div');
+      d.style.fontStyle = 'italic';
+      d.style.color = '#666';
+      d.textContent = text;
+      document.getElementById('messages').appendChild(d);
+      scrollMessages();
+    }
+
+    function appendMessage(from, text) {
+      const d = document.createElement('div');
+      d.innerHTML = '<strong>' + escapeHtml(from) + ':</strong> ' + escapeHtml(text);
+      document.getElementById('messages').appendChild(d);
+      scrollMessages();
+    }
+
+    function scrollMessages() {
+      const m = document.getElementById('messages');
+      m.scrollTop = m.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    document.getElementById('closeRoomBtn').addEventListener('click', () => {
+      const hostToken = document.getElementById('hostToken').value.trim();
+      if (!hostToken) return alert('Host token required to close the room.');
+      socket.emit('close-room', { roomId, hostToken }, (ack) => {
+        if (!ack || !ack.ok) return alert('Close failed: ' + (ack?.error || 'unknown'));
+        appendSystem('You closed the room. All data deleted server-side.');
+      });
+    });
+
+    socket.on('disconnect', () => {
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('msg').disabled = true;
+    });
+  </script>
+</body>
+</html>
+HTML
+
+# README.md
+cat > README.md <<'MD'
+# Anonymous-Chat
+
+Ephemeral anonymous group chat (max 5) using Node.js, Express and Socket.IO.
+
+## Run locally
+```bash
+npm install
+npm start
+# open http://localhost:3000
