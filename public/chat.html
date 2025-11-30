@@ -27,6 +27,7 @@
   <div id="chatUI" style="display:none;">
     <div id="roomInfo"></div>
     <div id="messages"></div>
+    <div id="typingIndicator" style="font-style:italic; color:#888; height:20px; font-size:0.9em;"></div>
     <div style="margin-top:8px;">
       <input id="msg" style="width:70%" maxlength="1000" />
       <button id="sendBtn">Send</button>
@@ -88,17 +89,71 @@
       document.getElementById('participants').textContent = 'Participants: ' + (list.length ? list.join(', ') : '—');
     });
 
-    socket.on('message', m => appendMessage(m.from, m.text));
+    socket.on('message', m => {
+      // Clear typing indicator for this user (optional, or just wait for stop-typing)
+      // Actually, if they sent a message, they stopped typing.
+      removeTypingUser(m.from);
+      appendMessage(m.from, m.text);
+    });
+
+    // Typing logic
+    const typingUsers = new Set();
+    const typingIndicator = document.getElementById('typingIndicator');
+    let typingTimeout = null;
+
+    function updateTypingUI() {
+      if (typingUsers.size === 0) {
+        typingIndicator.textContent = '';
+      } else {
+        const names = Array.from(typingUsers);
+        if (names.length > 3) {
+          typingIndicator.textContent = 'Several people are typing...';
+        } else {
+          typingIndicator.textContent = names.join(', ') + (names.length === 1 ? ' is typing...' : ' are typing...');
+        }
+      }
+    }
+
+    function removeTypingUser(username) {
+        if (typingUsers.has(username)) {
+            typingUsers.delete(username);
+            updateTypingUI();
+        }
+    }
+
+    socket.on('typing', data => {
+      typingUsers.add(data.username);
+      updateTypingUI();
+    });
+
+    socket.on('stop-typing', data => {
+      removeTypingUser(data.username);
+    });
 
     document.getElementById('sendBtn').addEventListener('click', sendMessage);
-    document.getElementById('msg').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+    const msgInput = document.getElementById('msg');
+
+    msgInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') sendMessage();
+    });
+
+    msgInput.addEventListener('input', () => {
+        socket.emit('typing');
+        if (typingTimeout) clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            socket.emit('stop-typing');
+        }, 1000);
+    });
 
     function sendMessage() {
-      const t = document.getElementById('msg').value.trim();
+      const t = msgInput.value.trim();
       if (!t) return;
+      socket.emit('stop-typing'); // Stop typing immediately on send
+      if (typingTimeout) clearTimeout(typingTimeout);
+
       socket.emit('message', t, (ack) => {
         if (!ack || !ack.ok) return alert('Send failed: ' + (ack?.error || 'unknown'));
-        document.getElementById('msg').value = '';
+        msgInput.value = '';
       });
     }
 
