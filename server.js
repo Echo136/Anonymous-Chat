@@ -18,12 +18,19 @@ const rooms = {};
 app.get('/create-room', (req, res) => {
   const roomId = nanoid(8);
   const hostToken = nanoid(16);
-  rooms[roomId] = {
+  const room = {
     hostToken,
     hostSocketId: null,
     users: new Map(),
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    // Auto-delete if empty after 10 minutes
+    cleanupTimer: setTimeout(() => {
+      if (rooms[roomId] && rooms[roomId].users.size === 0) {
+        delete rooms[roomId];
+      }
+    }, 10 * 60 * 1000)
   };
+  rooms[roomId] = room;
   res.json({ roomId, inviteLink: `/chat.html?room=${roomId}`, hostToken });
 });
 
@@ -33,14 +40,6 @@ app.get('/room-info/:roomId', (req, res) => {
   if (!r) return res.status(404).json({ error: 'Not found' });
   return res.json({ userCount: r.users.size, createdAt: r.createdAt });
 });
-
-// Helper to escape HTML (server-side sanitization)
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
 
 io.on('connection', socket => {
   // join-room: { roomId, username, hostToken? }
@@ -52,6 +51,12 @@ io.on('connection', socket => {
       }
       const room = rooms[roomId];
       if (!room) return ack?.({ ok: false, error: 'Room not found or closed' });
+
+      // clear cleanup timer since someone is joining
+      if (room.cleanupTimer) {
+        clearTimeout(room.cleanupTimer);
+        room.cleanupTimer = null;
+      }
 
       // enforce max 5
       if (room.users.size >= 5) {
@@ -65,7 +70,7 @@ io.on('connection', socket => {
         socket.data.hostToken = hostToken;
       }
 
-      const safeName = escapeHtml(String(username).slice(0, 32));
+      const safeName = String(username).slice(0, 32);
       room.users.set(socket.id, { username: safeName });
       socket.data.roomId = roomId;
       socket.data.username = safeName;
@@ -88,8 +93,7 @@ io.on('connection', socket => {
     if (!roomId || !rooms[roomId]) return ack?.({ ok: false, error: 'Not in room' });
 
     const text = String(msg || '').slice(0, 1000);
-    const safeText = escapeHtml(text);
-    io.to(roomId).emit('message', { from: username, text: safeText, ts: Date.now() });
+    io.to(roomId).emit('message', { from: username, text: text, ts: Date.now() });
     ack?.({ ok: true });
   });
 

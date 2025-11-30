@@ -5,13 +5,24 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "DEBUG=anonymous-chat node server.js"
+    "dev": "DEBUG=anonymous-chat node server.js",
+    "test": "mocha test/*.test.js"
   },
-  "keywords": ["chat","ephemeral","socket.io","anonymous"],
+  "keywords": [
+    "chat",
+    "ephemeral",
+    "socket.io",
+    "anonymous"
+  ],
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "nanoid": "^4.0.0"
+    "nanoid": "^4.0.0",
+    "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "chai": "^6.2.1",
+    "mocha": "^11.7.5",
+    "socket.io-client": "^4.8.1"
   }
 }
