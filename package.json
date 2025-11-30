@@ -1,0 +1,17 @@
+{
+  "name": "anonymous-chat",
+  "version": "1.0.0",
+  "description": "Ephemeral anonymous group chat (max 5) using Node, Express and Socket.IO",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "DEBUG=anonymous-chat node server.js"
+  },
+  "keywords": ["chat","ephemeral","socket.io","anonymous"],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "nanoid": "^4.0.0"
+  }
+}
