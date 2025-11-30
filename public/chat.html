@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Anonymous Chat</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; }
+    #messages { border: 1px solid #ddd; height: 320px; overflow:auto; padding: 8px; background:#fff; }
+    #participants { margin-top:8px; font-size:0.9em; color:#333; }
+    .sys { font-style: italic; color:#666; }
+    .msg { margin:6px 0; }
+    .from { font-weight:600; margin-right:6px; }
+    input[type=text] { padding:6px; }
+    button { padding:6px 10px; }
+  </style>
+</head>
+<body>
+  <h2>Anonymous Group Chat</h2>
+
+  <div id="preJoin">
+    <label>Username: <input id="username" maxlength="32" placeholder="Guest123"/></label>
+    <label style="margin-left:12px;">Host token (only if you're host): <input id="hostToken" maxlength="64"/></label>
+    <button id="joinBtn">Join</button>
+  </div>
+
+  <div id="chatUI" style="display:none;">
+    <div id="roomInfo"></div>
+    <div id="messages"></div>
+    <div style="margin-top:8px;">
+      <input id="msg" style="width:70%" maxlength="1000" />
+      <button id="sendBtn">Send</button>
+      <button id="closeRoomBtn" style="display:none; margin-left:8px;">Close Room (host)</button>
+    </div>
+    <div id="participants"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Utils
+    function escapeHtml(s) {
+      return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    const params = new URLSearchParams(location.search);
+    const roomId = params.get('room');
+
+    const socket = io();
+
+    const usernameInput = document.getElementById('username');
+    usernameInput.placeholder = 'Guest' + Math.floor(Math.random()*900 + 100);
+
+    document.getElementById('joinBtn').addEventListener('click', () => {
+      const username = (usernameInput.value || usernameInput.placeholder).trim();
+      const hostToken = document.getElementById('hostToken').value.trim() || null;
+      if (!roomId) {
+        alert('No room specified in URL. Use invite link containing ?room=ROOMID');
+        return;
+      }
+      socket.emit('join-room', { roomId, username, hostToken }, (resp) => {
+        if (!resp || !resp.ok) {
+          alert('Failed to join: ' + (resp?.error || 'unknown'));
+          return;
+        }
+        document.getElementById('preJoin').style.display = 'none';
+        document.getElementById('chatUI').style.display = 'block';
+        document.getElementById('roomInfo').textContent = `Room: ${roomId} — Users: ${resp.userCount}`;
+        if (resp.host) document.getElementById('closeRoomBtn').style.display = 'inline';
+      });
+    });
+
+    socket.on('system', evt => {
+      if (!evt) return;
+      if (evt.type === 'join') appendSystem(`${evt.username} joined`);
+      if (evt.type === 'leave') appendSystem(`${evt.username} left`);
+      if (evt.type === 'room-closed') {
+        appendSystem('Host closed the room. Session ended.');
+        document.getElementById('msg').disabled = true;
+        document.getElementById('sendBtn').disabled = true;
+        document.getElementById('closeRoomBtn').disabled = true;
+      }
+    });
+
+    socket.on('participants', list => {
+      document.getElementById('participants').textContent = 'Participants: ' + (list.length ? list.join(', ') : '—');
+    });
+
+    socket.on('message', m => appendMessage(m.from, m.text));
+
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('msg').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+
+    function sendMessage() {
+      const t = document.getElementById('msg').value.trim();
+      if (!t) return;
+      socket.emit('message', t, (ack) => {
+        if (!ack || !ack.ok) return alert('Send failed: ' + (ack?.error || 'unknown'));
+        document.getElementById('msg').value = '';
+      });
+    }
+
+    function appendSystem(text) {
+      const d = document.createElement('div');
+      d.className = 'sys';
+      d.textContent = text;
+      document.getElementById('messages').appendChild(d);
+      scrollMessages();
+    }
+
+    function appendMessage(from, text) {
+      const d = document.createElement('div');
+      d.className = 'msg';
+      d.innerHTML = '<span class="from">' + escapeHtml(from) + ':</span> ' + escapeHtml(text);
+      document.getElementById('messages').appendChild(d);
+      scrollMessages();
+    }
+
+    function scrollMessages() {
+      const m = document.getElementById('messages');
+      m.scrollTop = m.scrollHeight;
+    }
+
+    document.getElementById('closeRoomBtn').addEventListener('click', () => {
+      const hostToken = document.getElementById('hostToken').value.trim();
+      if (!hostToken) return alert('Host token required to close the room.');
+      socket.emit('close-room', { roomId, hostToken }, (ack) => {
+        if (!ack || !ack.ok) return alert('Close failed: ' + (ack?.error || 'unknown'));
+        appendSystem('You closed the room. All data deleted server-side.');
+      });
+    });
+
+    socket.on('disconnect', () => {
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('msg').disabled = true;
+    });
+  </script>
+</body>
+</html>
