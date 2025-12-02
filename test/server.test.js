@@ -152,4 +152,75 @@ describe('Anonymous Chat Server', function() {
     });
   });
 
+  it('should broadcast typing events', (done) => {
+    createRoom().then(({ roomId }) => {
+      const client1 = io(socketUrl);
+      const client2 = io(socketUrl);
+      const username1 = 'TypingUser';
+      const username2 = 'Observer';
+      let typingReceived = false;
+
+      client1.on('connect', () => {
+        client1.emit('join-room', { roomId, username: username1 });
+      });
+
+      client2.on('connect', () => {
+        client2.emit('join-room', { roomId, username: username2 });
+      });
+
+      client2.on('typing', (data) => {
+        if (data.username === username1) {
+          typingReceived = true;
+          // After typing, send stop typing
+          client1.emit('stop-typing');
+        }
+      });
+
+      client2.on('stop-typing', (data) => {
+        if (data.username === username1 && typingReceived) {
+          client1.disconnect();
+          client2.disconnect();
+          done();
+        }
+      });
+
+      // trigger typing after a short delay
+      setTimeout(() => {
+        client1.emit('typing');
+      }, 500);
+    });
+  });
+
+  it('should enforce message rate limiting', function(done) {
+    this.timeout(5000);
+    createRoom().then(({ roomId }) => {
+      const client = io(socketUrl);
+      const username = 'Spammer';
+
+      client.on('connect', () => {
+        client.emit('join-room', { roomId, username }, async () => {
+          // Send 10 messages quickly (allowed)
+          const promises = [];
+          for (let i = 0; i < 10; i++) {
+            promises.push(new Promise(resolve => {
+              client.emit('message', `msg ${i}`, (ack) => {
+                expect(ack.ok).to.be.true;
+                resolve();
+              });
+            }));
+          }
+          await Promise.all(promises);
+
+          // Send 11th message (should fail)
+          client.emit('message', 'limit breaker', (ack) => {
+            expect(ack.ok).to.be.false;
+            expect(ack.error).to.contain('Rate limit');
+            client.disconnect();
+            done();
+          });
+        });
+      });
+    });
+  });
+
 });

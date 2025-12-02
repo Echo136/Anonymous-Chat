@@ -2,11 +2,26 @@
 const express = require('express');
 const http = require('http');
 const { nanoid } = require('nanoid');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
 const app = express();
 const server = http.createServer(app);
 const io = require('socket.io')(server, { pingTimeout: 20000 });
 
 const PORT = process.env.PORT || 3000;
+
+app.use(helmet({
+  contentSecurityPolicy: false, // simpler for this demo, allows inline scripts
+}));
+
+// Rate limiter for room creation
+const createRoomLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.use(express.static('public'));
 
@@ -15,7 +30,7 @@ app.use(express.static('public'));
 const rooms = {};
 
 // Create a room
-app.get('/create-room', (req, res) => {
+app.get('/create-room', createRoomLimiter, (req, res) => {
   const roomId = nanoid(8);
   const hostToken = nanoid(16);
   const room = {
@@ -92,9 +107,36 @@ io.on('connection', socket => {
     const { roomId, username } = socket.data;
     if (!roomId || !rooms[roomId]) return ack?.({ ok: false, error: 'Not in room' });
 
+    // Rate limiting: 10 messages per 10 seconds
+    const now = Date.now();
+    if (!socket.data.msgTimestamps) socket.data.msgTimestamps = [];
+    // remove timestamps older than 10s
+    socket.data.msgTimestamps = socket.data.msgTimestamps.filter(ts => now - ts < 10000);
+
+    if (socket.data.msgTimestamps.length >= 10) {
+      return ack?.({ ok: false, error: 'Rate limit exceeded. Slow down.' });
+    }
+    socket.data.msgTimestamps.push(now);
+
     const text = String(msg || '').slice(0, 1000);
     io.to(roomId).emit('message', { from: username, text: text, ts: Date.now() });
     ack?.({ ok: true });
+  });
+
+  // typing: (no payload needed, implied from socket)
+  socket.on('typing', () => {
+    const { roomId, username } = socket.data;
+    if (roomId) {
+      socket.to(roomId).emit('typing', { username });
+    }
+  });
+
+  // stop-typing
+  socket.on('stop-typing', () => {
+    const { roomId, username } = socket.data;
+    if (roomId) {
+      socket.to(roomId).emit('stop-typing', { username });
+    }
   });
 
   // close-room: { roomId, hostToken }
